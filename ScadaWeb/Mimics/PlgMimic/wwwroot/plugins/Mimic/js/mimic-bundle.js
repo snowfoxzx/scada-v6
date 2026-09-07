@@ -166,6 +166,13 @@ rs.mimic.ObjectHelper = class ObjectHelper {
         }
     }
 
+    // Converts the specified value to a boolean primitive.
+    static _convertToBoolean(value) {
+        return typeof value === "string"
+            ? value.trim().toLowerCase() === "true"
+            : Boolean(value);
+    }
+
     // Gets the value of the object property. Property chain is an array of property names.
     static getPropertyValue(obj, propertyChain, chainIndex) {
         if (obj == null) {
@@ -207,7 +214,7 @@ rs.mimic.ObjectHelper = class ObjectHelper {
         } else if (typeof baseValue === "string") {
             return String(sourceValue);
         } else if (typeof baseValue === "boolean") {
-            return Boolean(sourceValue);
+            return ObjectHelper._convertToBoolean(sourceValue);
         } else if (baseValue instanceof Object) {
             let mergedObject = ScadaUtils.deepClone(baseValue);
             let sourceIsObject = sourceValue instanceof Object;
@@ -2567,9 +2574,14 @@ rs.mimic.FaceplateInstance = class extends rs.mimic.Component {
                     if (component.isFaceplate) {
                         let topPropertyName = propertyChain[1];
                         let childPropertyExport = component.model?.propertyExportMap.get(topPropertyName);
-                        return childPropertyExport
-                            ? component.getTargetPropertyValue(childPropertyExport)
-                            : ObjectHelper.getPropertyValue(component.properties, propertyChain, 1);
+
+                        if (childPropertyExport) {
+                            return childPropertyExport.path
+                                ? component.getTargetPropertyValue(childPropertyExport)
+                                : component.properties[childPropertyExport.name] ?? childPropertyExport.defaultValue;
+                        } else {
+                            return ObjectHelper.getPropertyValue(component.properties, propertyChain, 1);
+                        }
                     } else {
                         return ObjectHelper.getPropertyValue(component.properties, propertyChain, 1);
                     }
@@ -2599,7 +2611,11 @@ rs.mimic.FaceplateInstance = class extends rs.mimic.Component {
                         let childPropertyExport = component.model?.propertyExportMap.get(topPropertyName);
 
                         if (childPropertyExport) {
-                            component.setTargetPropertyValue(childPropertyExport, value);
+                            if (childPropertyExport.path) {
+                                component.setTargetPropertyValue(childPropertyExport, value);
+                            } else {
+                                component.properties[childPropertyExport.name] = value;
+                            }
                         } else {
                             ObjectHelper.setPropertyValue(component.properties, propertyChain, 1, value);
                         }

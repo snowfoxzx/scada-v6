@@ -5,15 +5,11 @@ using Scada.AB;
 using Scada.Comm.Channels;
 using Scada.Comm.Config;
 using Scada.Comm.Devices;
+using Scada.Comm.Drivers.DrvSms.Logic.Messaging;
 using Scada.Comm.Drivers.DrvSms.Logic.Protocol;
 using Scada.Comm.Lang;
-using Scada.Data.Const;
 using Scada.Data.Models;
 using Scada.Lang;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
 
 namespace Scada.Comm.Drivers.DrvSms.Logic
 {
@@ -24,17 +20,21 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
     internal class DevSmsLogic : DeviceLogic
     {
         /// <summary>
+        /// Gets the shared data key of the message bag.
+        /// </summary>
+        private const string MessageBagKey = "Sms.MessageBag";
+        /// <summary>
         /// The line ending when communicating with a modem.
         /// </summary>
         private const string ModemNewLine = "\x0D\x0A";
         /// <summary>
         /// The condition to stop reading when OK is received.
         /// </summary>
-        private readonly TextStopCondition OkStopCond = new TextStopCondition("OK");
+        private readonly TextStopCondition OkStopCond = new("OK");
         /// <summary>
         /// The condition to stop reading when OK or ERROR are received.
         /// </summary>
-        private readonly TextStopCondition OkErrStopCond = new TextStopCondition("OK", "ERROR");
+        private readonly TextStopCondition OkErrStopCond = new("OK", "ERROR");
 
         private readonly List<Message> messages; // contains messages received by the device
         private AddressBook addressBook;         // the address book shared for the communication line
@@ -48,29 +48,74 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
         {
             CanSendCommands = true;
 
-            messages = new List<Message>();
+            messages = [];
             addressBook = null;
         }
 
 
         /// <summary>
-        /// Creates events according to the received messages.
+        /// Creates new message items based on the received messages.
         /// </summary>
-        private void CreateEvents()
+        private List<MessageItem> CreateMessageItems()
         {
-            foreach (Message message in messages)
+            return [..messages
+                .Where(m => m.Status <= MessageStatus.Read) // just received
+                .Select(m => new MessageItem(m))];
+        }
+
+        /// <summary>
+        /// Gets the message bag from the communication line shared data, or creates a new one.
+        /// </summary>
+        private MessageBag GetMessageBag()
+        {
+            if (!LineContext.SharedData.TryGetValueOfType(MessageBagKey, out MessageBag messageBag))
             {
-                DeviceData.EnqueueEvent(new DeviceEvent(DeviceTags[TagCode.Msg])
+                messageBag = new MessageBag();
+                LineContext.SharedData.Add(MessageBagKey, messageBag);
+            }
+
+            return messageBag;
+        }
+
+        /// <summary>
+        /// Puts the messages in the bag.
+        /// </summary>
+        private void FillMessageBag()
+        {
+            MessageBag messageBag = GetMessageBag();
+            List<MessageItem> messageItems = CreateMessageItems();
+            messageItems.ForEach(messageBag.Add);
+        }
+
+        /// <summary>
+        /// Processes the remaining messages from the message bag that were received in the previous session.
+        /// </summary>
+        private void UnpackMessageBag()
+        {
+            MessageBag messageBag = GetMessageBag();
+
+            try
+            {
+                DeviceTag eventTag = DeviceTags[TagCode.Msg];
+                int messageCount = 0;
+
+                foreach (IMessageItem messageItem in messageBag.GetUnprocessed())
                 {
-                    Timestamp = DateTime.UtcNow,
-                    CnlVal = 0.0,
-                    CnlStat = CnlStatusID.Defined, // has informational severity
-                    TextFormat = EventTextFormat.CustomText,
-                    Text = message.Phone + "; " + message.Text,
-                    Descr = string.Format(Locale.IsRussian ?
-                        "Сообщение от {0}" :
-                        "Message from {0}", message.Phone)
-                });
+                    DeviceData.EnqueueEvent(EventFactory.CreateDeviceEvent(eventTag, messageItem));
+                    messageCount++;
+                }
+
+                if (messageCount > 0)
+                {
+                    Log.WriteLine(Locale.IsRussian ?
+                        "Полученных сообщений: {0}" :
+                        "Messages received: {0}", messageCount);
+                    DeviceData.Add(TagCode.Msg, messageCount);
+                }
+            }
+            finally
+            {
+                messageBag.Clear();
             }
         }
 
@@ -86,8 +131,8 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
             if (sepIdx >= 0)
             {
                 // get phone numbers
-                string recipient = cmdDataStr.Substring(0, sepIdx);
-                phoneNumbers = new List<string>();
+                string recipient = cmdDataStr[..sepIdx];
+                phoneNumbers = [];
 
                 if (addressBook == null)
                 {
@@ -136,7 +181,7 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
                 }
 
                 // get message text
-                messageText = cmdDataStr.Substring(sepIdx + 1);
+                messageText = cmdDataStr[(sepIdx + 1)..];
 
                 if (string.IsNullOrEmpty(messageText))
                 {
@@ -174,8 +219,8 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
             else
             {
                 bool formatOK = phoneNumber[0] == '+'
-                    ? phoneNumber.Length > 1 && phoneNumber.Substring(1).AsEnumerable().All(c => char.IsDigit(c))
-                    : phoneNumber.AsEnumerable().All(c => char.IsDigit(c));
+                    ? phoneNumber.Length > 1 && phoneNumber[1..].AsEnumerable().All(char.IsDigit)
+                    : phoneNumber.AsEnumerable().All(char.IsDigit);
 
                 if (formatOK)
                 {
@@ -322,6 +367,9 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
                 }
             }
 
+            // process messages from previous session
+            UnpackMessageBag();
+
             // read received messages
             if (LastRequestOK)
             {
@@ -346,11 +394,10 @@ namespace Scada.Comm.Drivers.DrvSms.Logic
                 {
                     messages.Clear();
                     PduConverter.FillMessageList(messages, response, out string logMsg);
+                    FillMessageBag();
 
                     if (!string.IsNullOrEmpty(logMsg))
                         Log.WriteLine(logMsg);
-
-                    CreateEvents();
                 }
             }
 
