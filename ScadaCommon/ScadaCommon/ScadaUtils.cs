@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2025 Rapid Software LLC
+ * Copyright 2026 Rapid Software LLC
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
  * 
  * Author   : Mikhail Shiryaev
  * Created  : 2007
- * Modified : 2025
+ * Modified : 2026
  */
 
 using Scada.Lang;
@@ -31,9 +31,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
-using System.Xml;
 using System.Xml.Serialization;
 
 namespace Scada
@@ -284,15 +284,28 @@ namespace Scada
         }
 
         /// <summary>
+        /// Creates a full copy of the specified object.
+        /// </summary>
+        public static T DeepClone<T>(this T obj, SerializationBinder binder = null)
+        {
+            // use JsonSerializer after .NET Standard support is removed
+#if NET10_0_OR_GREATER
+            return DeepCloneDc(obj);
+#else
+            return DeepCloneBf(obj, binder);
+#endif
+        }
+
+        /// <summary>
         /// Creates a full copy of the specified object using BinaryFormatter.
         /// </summary>
         /// <remarks>
         /// A cloned object and its children must have the Serializable attribute.
-        /// This method is only allowed in WinForms applications.
         /// BinaryFormatter is not recommended, see https://aka.ms/binaryformatter
         /// </remarks>
-        public static T DeepClone<T>(this T obj, SerializationBinder binder = null)
+        public static T DeepCloneBf<T>(this T obj, SerializationBinder binder = null)
         {
+#pragma warning disable SYSLIB0011 // Type or member is obsolete
             using (MemoryStream stream = new MemoryStream())
             {
                 BinaryFormatter formatter = new BinaryFormatter();
@@ -304,12 +317,34 @@ namespace Scada
                 stream.Position = 0;
                 return (T)formatter.Deserialize(stream);
             }
+#pragma warning restore SYSLIB0011 // Type or member is obsolete
+        }
+
+        /// <summary>
+        /// Creates a full copy of the specified object using DataContractSerializer.
+        /// </summary>
+        /// <remarks>
+        /// A cloned object and its children must have the Serializable attribute.
+        /// </remarks>
+        public static T DeepCloneDc<T>(this T obj, IEnumerable<Type> knownTypes = null)
+        {
+            DataContractSerializer serializer = new DataContractSerializer(obj.GetType(), knownTypes);
+
+            using (MemoryStream stream = new MemoryStream())
+            {
+                serializer.WriteObject(stream, obj);
+                stream.Position = 0;
+                return (T)serializer.ReadObject(stream);
+            }
         }
 
         /// <summary>
         /// Creates a full copy of the specified object using XmlSerializer.
         /// </summary>
-        public static T SafeClone<T>(this T obj)
+        /// <remarks>
+        /// Cloneable classes must have the public modifier.
+        /// </remarks>
+        public static T DeepCloneXml<T>(this T obj)
         {
             XmlSerializer serializer = new XmlSerializer(obj.GetType());
 
@@ -322,13 +357,22 @@ namespace Scada
         }
 
         /// <summary>
+        /// Creates a full copy of the specified object without using BinaryFormatter.
+        /// </summary>
+        public static T SafeClone<T>(this T obj)
+        {
+            return DeepCloneDc(obj);
+        }
+
+        /// <summary>
         /// Creates a shallow copy of the properties of the specified object.
         /// </summary>
         public static T ShallowCopy<T>(this T obj)
         {
-            object newObj = Activator.CreateInstance(typeof(T));
+            Type objType = obj.GetType();
+            object newObj = Activator.CreateInstance(objType);
 
-            foreach (PropertyDescriptor prop in TypeDescriptor.GetProperties(typeof(T)))
+            foreach (PropertyDescriptor prop in TypeDescriptor.GetProperties(objType))
             {
                 object val = prop.GetValue(obj);
                 prop.SetValue(newObj, val);
